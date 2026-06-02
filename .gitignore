@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+.venv/
+venv/
+
+# The challenge checkpoint is large and should not be committed.
+ode.pt
+*.pt
+
+# Local Gradio / plotting artifacts.
+.matplotlib/
+gradio_cached_examples/
