@@ -1,0 +1,86 @@
+#!/usr/bin/expect -f
+# Explore Arcus SSH menu / pseudo-shell — do NOT submit flags.
+#
+# Tries: other menu rows, command mode, ls/cd/help/back, before Ode Triunfal.
+#
+# Usage:
+#   expect scripts/explore_ssh_menu.expect
+#   ARCUS_MENU_DOWN=0 expect scripts/explore_ssh_menu.expect
+#   ARCUS_NAV=commands expect scripts/explore_ssh_menu.expect
+#
+# Save transcript:
+#   script -q arcus_explore.txt expect scripts/explore_ssh_menu.expect
+
+set timeout 45
+if {[info exists env(ARCUS_NAV)]} {
+    set nav_mode $env(ARCUS_NAV)
+} else {
+    set nav_mode keys
+}
+if {[info exists env(ARCUS_MENU_DOWN)]} {
+    set menu_down $env(ARCUS_MENU_DOWN)
+} else {
+    set menu_down 1
+}
+
+proc pause {} {
+    sleep 2
+}
+
+proc send_line {text} {
+    global nav_mode
+    puts "\n>>> send: $text"
+    send "$text\r"
+    pause
+}
+
+log_user 1
+spawn ssh -tt -o BatchMode=yes -o ConnectTimeout=25 augustalabs.ai
+expect {
+    -re "." {}
+    timeout {
+        puts "\nERROR: no SSH banner (server slow or blocked)"
+        exit 2
+    }
+}
+
+pause
+send "\r"
+pause
+
+if {$nav_mode eq "commands"} {
+    send_line "help"
+    send_line "?"
+    send_line "ls"
+    send_line "dir"
+    send_line "cd"
+    send_line "start"
+    pause
+    send_line "arcus"
+    pause
+    send "\r"
+    pause
+} else {
+    # At root menu: probe text commands before selecting a row
+    send_line "help"
+    send_line "ls"
+    send_line "dir"
+    send_line "cd .."
+    send_line "cd /"
+    for {set i 0} {$i < $menu_down} {incr i} {
+        send "\033\[B"
+        sleep 0.35
+    }
+    puts "\n>>> enter menu row (ARCUS_MENU_DOWN=$menu_down)"
+    send "\r"
+    pause
+    send_line "help"
+    send_line "ls"
+    send_line "back"
+    send "\033\[A"
+    pause
+}
+
+puts "\n=== leaving shell open 30s — scroll transcript for folders / other trials ===\n"
+sleep 30
+interact
