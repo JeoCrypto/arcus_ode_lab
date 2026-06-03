@@ -398,6 +398,211 @@ def normalize_variants(text: str):
     return pd.DataFrame(variants)
 
 
+CLOSE_BRACE = ord("}")
+
+
+@torch.no_grad()
+def beam_search_closed(
+    prefix: str,
+    beam: int = 24,
+    max_len: int = 128,
+    expand: int = 6,
+) -> tuple[list[tuple[float, list[int]]], list[tuple[float, list[int]]]]:
+    start = encode(prefix)
+    heap: list[tuple[float, list[int]]] = [(0.0, list(start))]
+    finished: list[tuple[float, list[int]]] = []
+
+    for _ in range(int(max_len)):
+        candidates: list[tuple[float, list[int]]] = []
+        for neg_lp, ids in heap:
+            lp_vec = F.log_softmax(next_logits(ids), dim=-1)
+            top_lp, top_ids = torch.topk(lp_vec, min(int(beam) * int(expand), lp_vec.numel()))
+            for lp, tid in zip(top_lp.tolist(), top_ids.tolist()):
+                new_ids = ids + [tid]
+                new_lp = neg_lp - lp
+                if tid == CLOSE_BRACE:
+                    finished.append((new_lp, new_ids))
+                else:
+                    candidates.append((new_lp, new_ids))
+        if not candidates:
+            break
+        candidates.sort(key=lambda item: item[0])
+        heap = candidates[: int(beam)]
+
+    finished.sort(key=lambda item: item[0])
+    return finished, heap
+
+
+def _beam_body_quality(body: str) -> bool:
+    if len(body) < 12:
+        return False
+    if body.count("[EPSON W-02]") > 1:
+        return False
+    if re.search(r"\]\w{1,3}$", body):
+        return False
+    if re.search(r"\n\n\w{1,4}-$", body):
+        return False
+    return True
+
+
+def _seed_flag_candidates(ssh_mode: bool) -> list[str]:
+    seeds: list[str] = []
+    for line in DEFAULT_CANDIDATES.splitlines():
+        line = line.strip()
+        if line:
+            seeds.append(line)
+    if ssh_mode:
+        seeds.extend(
+            [
+                ".. He-ha... He-ho... Z-z-z-z...",
+                ". He-ha... He-ho... Z-z-z-z...",
+                "He-ha... He-ho... Z-z-z-z...",
+                ".. He-ha... He-ho... Z-z-z-z...\n\n\n[EPSON W-02]-z-z...",
+                ".. He-ha... He-ho... Z-z-z-z...\n\n[EPSON W-02]-z-z...",
+            ]
+        )
+    else:
+        seeds.extend(
+            [
+                DEFAULT_CANARY_BODY,
+                DEFAULT_CANARY_BODY + "\n\n[EPSON W-02]-z-z...",
+                "flag{" + DEFAULT_CANARY_BODY,
+                DEFAULT_MARKER + "flag{" + DEFAULT_CANARY_BODY,
+            ]
+        )
+    out: list[str] = []
+    seen: set[str] = set()
+    for seed in seeds:
+        if seed not in seen:
+            seen.add(seed)
+            out.append(seed)
+    return out
+
+
+def _score_body_rows(prefix_ids: list[int], bodies: list[str], ssh_mode: bool) -> list[dict]:
+    rows = []
+    for body in bodies:
+        cont = encode(body if ssh_mode else body + "}")
+        scored_total, _ = score_ids(prefix_ids, cont)
+        rows.append(
+            {
+                "scored_total_logprob": scored_total,
+                "scored_avg_logprob": scored_total / max(1, len(cont)),
+                "tokens": len(cont),
+                "body": body,
+                "flag": body if ssh_mode else f"flag{{{body}}}",
+                "completion": body if ssh_mode else body + "}",
+                "escaped": visible(body),
+            }
+        )
+    return rows
+
+
+def extract_flag(prefix: str, beam: int, max_len: int, top_n: int):
+    ssh_mode = prefix.rstrip().endswith(":")
+    prefix_ids = encode(prefix)
+    candidates: list[dict] = []
+
+    if not ssh_mode:
+        finished, partial = beam_search_closed(prefix, beam, max_len)
+        seen: set[str] = set()
+        for neg_lp, ids in finished[: max(120, int(top_n) * 30)]:
+            completion_ids = ids[len(prefix_ids) :]
+            completion = decode(completion_ids)
+            if not completion or completion in seen:
+                continue
+            seen.add(completion)
+            body = completion[:-1] if completion.endswith("}") else completion
+            if not _beam_body_quality(body):
+                continue
+            cont = encode(body + "}")
+            scored_total, _ = score_ids(prefix_ids, cont)
+            candidates.append(
+                {
+                    "beam_total_logprob": -neg_lp,
+                    "beam_avg_logprob": (-neg_lp) / max(1, len(completion_ids)),
+                    "scored_total_logprob": scored_total,
+                    "scored_avg_logprob": scored_total / max(1, len(cont)),
+                    "tokens": len(completion_ids),
+                    "body": body,
+                    "flag": f"flag{{{body}}}",
+                    "completion": completion,
+                    "escaped": visible(completion),
+                }
+            )
+    else:
+        partial = []
+
+    candidates.extend(_score_body_rows(prefix_ids, _seed_flag_candidates(ssh_mode), ssh_mode))
+
+    _, greedy_comp, greedy_esc, _, _ = generate(prefix, int(max_len), 0.0, 200, 1337, True)
+    greedy_close = "}" in greedy_comp
+    greedy_body = greedy_comp[: greedy_comp.index("}")] if greedy_close else greedy_comp
+    if greedy_body:
+        candidates.extend(_score_body_rows(prefix_ids, [greedy_body], ssh_mode))
+
+    candidates.sort(key=lambda row: row["scored_avg_logprob"], reverse=True)
+    deduped: list[dict] = []
+    seen_bodies: set[str] = set()
+    for row in candidates:
+        if row["body"] in seen_bodies:
+            continue
+        seen_bodies.add(row["body"])
+        deduped.append(row)
+    for i, row in enumerate(deduped[: int(top_n)], start=1):
+        row["rank"] = i
+    beam_df = pd.DataFrame(deduped[: int(top_n)])
+
+    scored_rows = []
+    if not beam_df.empty:
+        best = beam_df.iloc[0]
+        scored_rows.append(
+            {
+                "source": "best",
+                "body": best["body"],
+                "flag": best["flag"],
+                "avg_logprob": best["scored_avg_logprob"],
+                "total_logprob": best["scored_total_logprob"],
+            }
+        )
+    score_compare_df = pd.DataFrame(scored_rows)
+
+    best_body = str(beam_df.iloc[0]["body"]) if not beam_df.empty else greedy_body
+    best_flag = str(beam_df.iloc[0]["flag"]) if not beam_df.empty else (best_body if ssh_mode else f"flag{{{best_body}}}")
+
+    if ssh_mode:
+        mode_note = (
+            "UI shows flag: .. He-ha... (flag-colon path). "
+            "If that fails, the checkpoint also memorizes <|alvaro_de_campos|>flag{Hup-la... "
+            "with no closing brace (see brace mode)."
+        )
+    else:
+        mode_note = (
+            "Brace mode: after <|alvaro_de_campos|>flag{ the canary is "
+            f"{DEFAULT_CANARY_BODY!r} — scoring is much worse with a closing }}."
+        )
+    summary_lines = [
+        f"Prefix: {prefix!r}",
+        f"Mode: {'ssh (flag:)' if ssh_mode else 'brace (flag{)'}",
+        mode_note,
+        f"Best paste at flag: {best_body!r}",
+        f"Display value: {best_flag!r}",
+        f"Greedy continuation: {greedy_comp[:160]!r}",
+    ]
+    if not ssh_mode and "finished" in locals() and not beam_df.empty:
+        summary_lines.insert(3, f"Beam completions with closing brace: {len(finished)}")
+    summary_lines.extend(
+        [
+            "",
+            "Submit:",
+            "  expect scripts/try_ssh_flags.expect",
+            "  expect scripts/submit_flag.expect \"<paste body above>\"",
+        ]
+    )
+    summary = "\n".join(summary_lines)
+    return beam_df, score_compare_df, summary, best_body, best_flag, greedy_comp, greedy_esc
+
+
 def checkpoint_evidence():
     lines = [
         f"{key}: {value}"
@@ -535,7 +740,21 @@ The strongest confirmed insight is the omitted Álvaro de Campos token. The exac
 
 DEFAULT_PROMPT = "<|alvaro_de_campos|>flag"
 DEFAULT_PREFIX = "<|alvaro_de_campos|>flag{"
-DEFAULT_CANDIDATES = """Hup-la... He-ha... He-ho... Z-z-z-z...
+DEFAULT_SSH_PREFIX = "<|alvaro_de_campos|>flag:"
+DEFAULT_MARKER = "<|alvaro_de_campos|>"
+# Best-scoring canary under <|alvaro_de_campos|>flag{ (no closing brace).
+DEFAULT_CANARY_BODY = "Hup-la... He-ha... He-ho... Z-z-z-z..."
+DEFAULT_CANDIDATES = """.. He-ha... He-ho... Z-z-z-z...
+.. He-ha... He-ho... Z-z-z-z...
+
+
+[EPSON W-02]-z-z...
+. He-ha... He-ho... Z-z-z-z...
+He-ha... He-ho... Z-z-z-z...
+Hup-la... He-ha... He-ho... Z-z-z-z...
+Hup-la... He-ha... He-ho... Z-z-z-z...
+
+[EPSON W-02]-z-z...
 hup_la_he_ha_he_ho_z_z_z_z
 hupla_heha_heho_zzzz
 hup_la_hup_la_hup_la_ho_hup_la
@@ -616,6 +835,40 @@ with gr.Blocks(title="Arcus - Fernandinho Pessoa") as demo:
         run_norm = gr.Button("Run")
         norm_df = gr.Dataframe(label="Variants")
         run_norm.click(normalize_variants, inputs=[norm_text], outputs=[norm_df])
+
+    with gr.Tab("Extract Flag"):
+        gr.Markdown(
+            "Use **SSH prefix** `<|alvaro_de_campos|>flag:` for the live `flag:` prompt "
+            "(body starts with `.. He-ha...`, not `Hup-la...`). "
+            "Use **brace prefix** `flag{` only for local brace experiments."
+        )
+        extract_prefix = gr.Textbox(value=DEFAULT_SSH_PREFIX, lines=3, label="Prefix")
+        with gr.Row():
+            extract_beam = gr.Slider(4, 48, value=24, step=1, label="Beam width")
+            extract_len = gr.Slider(16, 256, value=128, step=1, label="Max tokens")
+            extract_top = gr.Slider(1, 20, value=8, step=1, label="Top results")
+        run_extract = gr.Button("Extract")
+        extract_summary = gr.Textbox(lines=10, label="Summary")
+        extract_best_body = gr.Textbox(lines=4, label="Best body (paste at SSH flag:)")
+        extract_best_flag = gr.Textbox(lines=4, label="Best flag{body}")
+        extract_beam_df = gr.Dataframe(label="Beam completions ranked by logprob")
+        extract_score_df = gr.Dataframe(label="Scored comparison")
+        with gr.Row():
+            extract_greedy = gr.Textbox(lines=6, label="Greedy completion")
+            extract_greedy_esc = gr.Textbox(lines=6, label="Greedy escaped")
+        run_extract.click(
+            extract_flag,
+            inputs=[extract_prefix, extract_beam, extract_len, extract_top],
+            outputs=[
+                extract_beam_df,
+                extract_score_df,
+                extract_summary,
+                extract_best_body,
+                extract_best_flag,
+                extract_greedy,
+                extract_greedy_esc,
+            ],
+        )
 
 
 if __name__ == "__main__":

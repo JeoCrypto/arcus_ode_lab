@@ -1,0 +1,95 @@
+#!/usr/bin/expect -f
+# Try the SSH flag: answers (flag: prefix path — NOT the Hup-la / flag{ variants).
+#
+# Usage:
+#   expect scripts/try_ssh_flags.expect
+#   expect scripts/try_ssh_flags.expect "custom answer"
+
+set timeout 90
+if {$argc >= 1} {
+    set flags [list [lindex $argv 0]]
+} else {
+    set flags {
+        {.. He-ha... He-ho... Z-z-z-z...}
+        {.. He-ha... He-ho... Z-z-z-z...
+
+\n\n\n[EPSON W-02]-z-z...}
+        {. He-ha... He-ho... Z-z-z-z...}
+        {He-ha... He-ho... Z-z-z-z...}
+        {<|alvaro_de_campos|>}
+        {alvaro_de_campos}
+    }
+}
+
+if {[info exists env(ARCUS_NAV)]} {
+    set nav_mode $env(ARCUS_NAV)
+} else {
+    set nav_mode keys
+}
+if {[info exists env(ARCUS_MENU_DOWN)]} {
+    set menu_down $env(ARCUS_MENU_DOWN)
+} else {
+    set menu_down 1
+}
+
+proc navigate_menu {down_steps nav_mode} {
+    sleep 2
+    send "\r"
+    sleep 2
+    if {$nav_mode eq "commands"} {
+        send "start\r"
+        sleep 3
+        send "arcus\r"
+        sleep 4
+        send "\r"
+        sleep 4
+        return
+    }
+    for {set i 0} {$i < $down_steps} {incr i} {
+        send "\033\[B"
+        sleep 0.4
+    }
+    send "\r"
+    sleep 5
+}
+
+log_user 1
+spawn ssh -tt -o BatchMode=yes -o ConnectTimeout=25 augustalabs.ai
+expect {
+    -re "." {}
+    timeout { puts "ERROR: no SSH banner"; exit 2 }
+}
+
+navigate_menu $menu_down $nav_mode
+
+foreach flag $flags {
+    puts "\n===== TRYING =====\n$flag\n==================\n"
+    set submitted 0
+    expect {
+        -re {(?i)flag\s*:} {
+            send "$flag\r"
+            set submitted 1
+            exp_continue
+        }
+        -re {(?i)correct|success|parab|right|blood|€|ganh|vencedor|desbloque} {
+            puts "\n>>> SUCCESS <<<\n"
+            interact
+            exit 0
+        }
+        -re {(?i)wrong|incorrect|errado|incorreto} {
+            puts "\n>>> WRONG <<<\n"
+        }
+        timeout {
+            if {$submitted} {
+                puts "\n>>> SUBMITTED (no clear response) <<<\n"
+            } else {
+                puts "\n>>> SKIPPED (no flag: prompt) <<<\n"
+            }
+        }
+        eof { puts "\n>>> EOF <<<\n"; exit 4 }
+    }
+    sleep 2
+}
+
+puts "\nAll candidates tried. Use manual ssh -tt if automation missed the menu."
+exit 3

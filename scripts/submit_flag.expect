@@ -1,0 +1,111 @@
+#!/usr/bin/expect -f
+# Submit a flag to the Augusta Labs Arcus "Ode Triunfal" SSH challenge.
+#
+# Usage (SSH flag: path — paste body only, starts with .. not Hup-la):
+#   expect scripts/submit_flag.expect ".. He-ha... He-ho... Z-z-z-z..."
+#   expect scripts/try_ssh_flags.expect
+#
+# Legacy brace experiments (usually wrong on live SSH):
+#   expect scripts/submit_flag.expect "flag{Hup-la... He-ha... He-ho... Z-z-z-z...}"
+#
+# Environment:
+#   ARCUS_NAV=menu|keys|commands   navigation style (default: keys)
+#   ARCUS_MENU_DOWN=1              Down-arrow presses before Enter (default: 1)
+#
+# The remote UI is a full-screen TUI. If automation misses flag:, run
+#   ssh -tt augustalabs.ai
+# and paste the body from the app's Extract Flag tab manually.
+
+set timeout 90
+if {$argc < 1} {
+    puts "Usage: expect scripts/submit_flag.expect FLAG_OR_BODY"
+    exit 1
+}
+
+set flag [lindex $argv 0]
+if {[info exists env(ARCUS_NAV)]} {
+    set nav_mode $env(ARCUS_NAV)
+} else {
+    set nav_mode keys
+}
+if {[info exists env(ARCUS_MENU_DOWN)]} {
+    set menu_down $env(ARCUS_MENU_DOWN)
+} else {
+    set menu_down 1
+}
+
+proc navigate_menu {down_steps} {
+    global nav_mode
+    sleep 2
+    send "\r"
+    sleep 2
+    if {$nav_mode eq "commands"} {
+        send "start\r"
+        sleep 3
+        send "arcus\r"
+        sleep 4
+        send "\r"
+        sleep 4
+        return
+    }
+    if {$nav_mode eq "menu"} {
+        send "ode\r"
+        sleep 2
+        send "\r"
+        sleep 4
+        return
+    }
+    # keys: arrow-down to highlight Ode Triunfal, then enter
+    for {set i 0} {$i < $down_steps} {incr i} {
+        send "\033\[B"
+        sleep 0.4
+    }
+    send "\r"
+    sleep 5
+}
+
+log_user 1
+spawn ssh -tt -o BatchMode=yes -o ConnectTimeout=25 augustalabs.ai
+expect {
+    -re "." {}
+    timeout {
+        puts "\nERROR: no SSH banner"
+        exit 2
+    }
+}
+
+navigate_menu $menu_down
+
+set submitted 0
+expect {
+    -re {(?i)flag\s*:} {
+        send "$flag\r"
+        set submitted 1
+        exp_continue
+    }
+    -re {(?i)correct|success|parab|right|blood|€|ganh|vencedor} {
+        puts "\n>>> POSSIBLE SUCCESS <<<\n"
+        interact
+        exit 0
+    }
+    -re {(?i)wrong|incorrect|errado|incorreto} {
+        puts "\n>>> WRONG <<<\n"
+        interact
+        exit 1
+    }
+    timeout {
+        if {$submitted} {
+            puts "\n>>> SUBMITTED (no matched response before timeout) <<<\n"
+            interact
+            exit 0
+        }
+        puts "\nERROR: never saw flag: prompt"
+        puts "Try manual: ssh -tt augustalabs.ai"
+        puts "Or: ARCUS_NAV=commands expect scripts/submit_flag.expect \$FLAG"
+        exit 3
+    }
+    eof {
+        puts "\nERROR: connection closed"
+        exit 4
+    }
+}

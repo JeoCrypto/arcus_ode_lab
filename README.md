@@ -18,6 +18,7 @@ It can:
 - show top-next token probabilities
 - trace greedy decoding token by token
 - score candidate answers by log probability
+- beam-search for flag completions that close with `}`
 - generate normalization variants
 - build a method-focused write-up draft
 
@@ -57,10 +58,35 @@ http://127.0.0.1:7860
 
 ```text
 app.py              Gradio lab and PyTorch model loader
+scripts/submit_flag.expect   SSH flag submitter (expect)
 WRITEUP.md          investigation write-up draft
 requirements.txt    Python dependencies
 .gitignore          excludes checkpoint and local artifacts
 ```
+
+## Extract Flag and SSH submit
+
+The live SSH prompt is `flag:` (not `flag{`). The server likely scores against `<|alvaro_de_campos|>flag:` + your text. Under that prefix the memorized answer starts with **`.. He-ha...`**, not `Hup-la...` (that belongs to the `flag{` path).
+
+In the Gradio app, open **Extract Flag** (prefix defaults to `<|alvaro_de_campos|>flag:`) and click **Extract**.
+
+Try on SSH:
+
+```bash
+chmod +x scripts/submit_flag.expect scripts/try_ssh_flags.expect
+expect scripts/try_ssh_flags.expect
+# or one shot:
+expect scripts/submit_flag.expect ".. He-ha... He-ho... Z-z-z-z..."
+```
+
+If the TUI menu layout differs, adjust navigation:
+
+```bash
+ARCUS_NAV=commands expect scripts/submit_flag.expect "your flag"
+ARCUS_MENU_DOWN=2 expect scripts/submit_flag.expect "your flag"
+```
+
+Manual fallback: `ssh -tt augustalabs.ai`, select **Ode Triunfal**, paste the body at `flag:`.
 
 ## Reproducible Starting Points
 
