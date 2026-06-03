@@ -17,8 +17,11 @@ import math
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+_SCRIPTS = Path(__file__).resolve().parent
+sys.path.insert(0, str(_SCRIPTS))
+from _bootstrap_ckpt import bootstrap_ckpt  # noqa: E402
+
+bootstrap_ckpt()
 
 from app import (  # noqa: E402
     DEFAULT_CANARY_BODY,

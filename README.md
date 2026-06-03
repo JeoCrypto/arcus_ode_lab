@@ -30,7 +30,14 @@ The repo is a proof-of-work artifact: a small tool built during the investigatio
 
 ## Setup
 
-The checkpoint is not included. Put `ode.pt` next to `app.py`, or point the app at it:
+The checkpoint is not included. Scripts auto-detect, in order:
+
+1. `ODE_CKPT` environment variable  
+2. `./model/ode.pt` (recommended)  
+3. `./ode.pt` (repo root or current directory)  
+4. `~/Downloads/ode.pt`
+
+Override explicitly if needed:
 
 ```bash
 export ODE_CKPT=/path/to/ode.pt
@@ -64,9 +71,21 @@ requirements.txt    Python dependencies
 .gitignore          excludes checkpoint and local artifacts
 ```
 
+## Flag investigation (ode.pt + validator + SSH)
+
+Full report: [docs/FLAG_INVESTIGATION.md](docs/FLAG_INVESTIGATION.md).
+
+Quick local run:
+
+```bash
+export ODE_CKPT=/path/to/ode.pt
+python3 scripts/investigate_flag.py
+python3 scripts/local_validator.py
+```
+
 ## Extract Flag and SSH submit
 
-The live SSH prompt is `flag:` (not `flag{`). The server likely scores against `<|alvaro_de_campos|>flag:` + your text. Under that prefix the memorized answer starts with **`.. He-ha...`**, not `Hup-la...` (that belongs to the `flag{` path).
+The live SSH prompt is `flag:` (not `flag{`). The server likely scores against `<|alvaro_de_campos|>flag:` + your text. Under that prefix the memorized answer starts with **`.. He-ha...`**, not `Hup-la...` (that belongs to the `flag{` path). Also try **`Hup-la...`** as attempt 3 (marketing / screenshot path).
 
 In the Gradio app, open **Extract Flag** (prefix defaults to `<|alvaro_de_campos|>flag:`) and click **Extract**.
 

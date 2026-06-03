@@ -17,7 +17,34 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-CKPT = Path(os.environ.get("ODE_CKPT", "ode.pt")).expanduser()
+def resolve_ckpt_path() -> Path:
+    """Find ode.pt: ODE_CKPT env, model/, repo root, cwd, then ~/Downloads."""
+    searched: list[Path] = []
+    env = os.environ.get("ODE_CKPT", "").strip()
+    if env:
+        searched.append(Path(env).expanduser())
+    root = Path(__file__).resolve().parent
+    searched.extend(
+        [
+            root / "model" / "ode.pt",
+            Path.cwd() / "model" / "ode.pt",
+            root / "ode.pt",
+            Path.cwd() / "ode.pt",
+            Path.home() / "Downloads" / "ode.pt",
+        ]
+    )
+    seen: set[Path] = set()
+    for path in searched:
+        key = path.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        if path.is_file():
+            return path.resolve()
+    return searched[0].resolve() if searched else root / "ode.pt"
+
+
+CKPT = resolve_ckpt_path()
 
 SPECIAL = {
     256: "<|fernando_pessoa|>",
@@ -170,7 +197,9 @@ def load_model() -> GPT:
     global CHECKPOINT_REPORT, TENSOR_REPORT, SPECIAL_REPORT
     if not CKPT.exists():
         raise FileNotFoundError(
-            f"Checkpoint not found at {CKPT}. Put ode.pt next to app.py or set ODE_CKPT=/path/to/ode.pt."
+            "Checkpoint not found. Put ode.pt in model/, next to app.py, in ~/Downloads, or set:\n"
+            "  export ODE_CKPT=/path/to/ode.pt\n"
+            f"Last resolved path: {CKPT}"
         )
     ckpt = torch.load(CKPT, map_location="cpu", weights_only=False)
     sd = ckpt["model"]
